@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -34,7 +35,6 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 
 	fmt.Println("uploading thumbnail for video", videoID, "by user", userID)
 
-	// TODO: implement the upload here
 	const maxMemory = 10 << 20
 	r.ParseMultipartForm(maxMemory)
 	file, header, err := r.FormFile("thumbnail")
@@ -45,6 +45,11 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	defer file.Close()
 
 	contentType := header.Header.Get("Content-Type")
+	if contentType == "" {
+		respondWithError(w, http.StatusBadRequest, "Missing Content-Type for thumbnail", nil)
+		return
+	}
+
 	mediaType, _, err := mime.ParseMediaType(contentType)
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Invalid media type", err)
@@ -52,18 +57,23 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	}
 
 	if mediaType != "image/jpeg" && mediaType != "image/png" {
-		respondWithError(w, http.StatusUnsupportedMediaType, "unsupported media type. Please use png or jpeg", fmt.Errorf("%s media type is not supported", mediaType))
+		respondWithError(w, http.StatusUnsupportedMediaType, "unsupported media type. Please use png or jpeg", fmt.Errorf("%s media type is not supported for thumpnails", mediaType))
 		return
 	}
 
 	videoMetaData, err := cfg.db.GetVideo(videoID)
 	if err != nil {
-		respondWithError(w, http.StatusNotFound, "video not found", err)
+		if strings.Contains(err.Error(), "no rows") {
+			respondWithError(w, http.StatusNotFound, "video not found", err)
+			return
+		}
+
+		respondWithError(w, http.StatusInternalServerError, "Couldn't find video", err)
 		return
 	}
 
 	if videoMetaData.UserID != userID {
-		respondWithError(w, http.StatusUnauthorized, "not video owner", err)
+		respondWithError(w, http.StatusUnauthorized, "Not authorized to update this video", err)
 		return
 	}
 
@@ -80,6 +90,8 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		respondWithError(w, http.StatusInternalServerError, "unable to create file", err)
 		return
 	}
+	defer newFile.Close()
+
 	_, err = io.Copy(newFile, file)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "unable to save file", err)
@@ -91,6 +103,7 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	err = cfg.db.UpdateVideo(videoMetaData)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "unable to save new video data", err)
+		return
 	}
 
 	respondWithJSON(w, http.StatusOK, videoMetaData)
